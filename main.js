@@ -25,6 +25,7 @@
   const statusPanel = document.getElementById('statusPanel');
   const toast = document.getElementById('toast');
   const inspectPanel = document.getElementById('inspectPanel');
+  const stateIndicator = document.getElementById('stateIndicator');
 
   // Turn rail
   const rail = document.createElement('div');
@@ -205,18 +206,23 @@
     // Movement animation progression
     if (game.anim && game.anim.kind === 'move') {
       const anim = game.anim;
-      anim.t += (dt/1000) * anim.speed;
-      while (anim.t >= 1 && anim.index < anim.path.length - 1) {
+      anim.t += (dt / 1000) * anim.speed;
+      while (anim.t > 1 && anim.index < anim.path.length - 1) {
         anim.t -= 1;
         anim.index++;
       }
       const u = idUnit.get(anim.unitId);
-      if (u) u.anim = { ...anim };
       if (anim.index >= anim.path.length - 1) {
-        if (u) { const last = anim.path[anim.path.length - 1]; u.pos.x = last.x; u.pos.y = last.y; u.anim = null; }
+        if (u) {
+          const last = anim.path[anim.path.length - 1];
+          u.pos.x = last.x;
+          u.pos.y = last.y;
+          u.anim = null;
+        }
         game.anim = null;
-        // Allow further command (move then act)
         if (game.phase === 'anim') game.phase = 'unit_start';
+      } else {
+        if (u) u.anim = { ...anim };
       }
     }
     // Smooth camera rotation toward target
@@ -622,6 +628,7 @@
     renderTurnRail();
     // Inspect panel
     renderInspectPanel();
+    renderStateIndicator();
   }
 
   function renderInspectPanel() {
@@ -637,6 +644,24 @@
       html += `<div class="line"><div>HP</div><div>${unit.stats.hp}/${unit.stats.maxhp}</div></div>`;
     }
     inspectPanel.innerHTML = html;
+  }
+
+  function renderStateIndicator() {
+    let text = '';
+    const active = idUnit.get(game.activeId);
+    if (!active) {
+      if (game.phase === 'idle') text = 'Processing...';
+    } else if (active.team === 'Red') {
+      if (game.phase === 'unit_start' || game.phase === 'command' || game.phase === 'targeting') text = 'Enemy turn';
+      else if (game.phase === 'anim' || game.phase === 'anim_action') text = 'Enemy acting...';
+    } else {
+      if (game.phase === 'unit_start') text = 'Choose command';
+      else if (game.phase === 'command') text = 'Select action';
+      else if (game.phase === 'targeting') text = 'Select target';
+      else if (game.phase === 'anim' || game.phase === 'anim_action') text = 'Resolving...';
+    }
+    stateIndicator.textContent = text;
+    stateIndicator.style.opacity = text ? 1 : 0;
   }
 
   function renderCommandPanel() {
@@ -714,19 +739,25 @@
 
   function handleKey(k) {
     const u = idUnit.get(game.activeId);
-    if (u && u.team === 'Red') return;
-    switch (k) {
-      // Camera
-      case 'q': camera.rot = (camera.rot + 3) & 3; camera.rotTarget -= Math.PI/2; break;
-      case 'e': camera.rot = (camera.rot + 1) & 3; camera.rotTarget += Math.PI/2; break;
-      case 'r': camera.tilt = clamp(camera.tilt + 0.05, 0.7, 1.0); break;
-      case 'f': camera.tilt = clamp(camera.tilt - 0.05, 0.7, 1.0); break;
-      case 'z': camera.zoom = clamp(camera.zoom + 0.1, 0.8, 1.6); break;
-      case 'x': camera.zoom = clamp(camera.zoom - 0.1, 0.8, 1.6); break;
-      case 'h': game.uiHints = !game.uiHints; document.getElementById('controls').classList.toggle('hidden', !game.uiHints); break;
-      case '0': autoBattleActiveUnit(); break;
-      case 'm': toggleMusic(); break;
+    const playerTurn = u && u.team === 'Blue';
+    const interactive = playerTurn && (game.phase === 'unit_start' || game.phase === 'command' || game.phase === 'targeting');
 
+    // Camera and global toggles are always available
+    switch (k) {
+      case 'q': camera.rot = (camera.rot + 3) & 3; camera.rotTarget -= Math.PI/2; return;
+      case 'e': camera.rot = (camera.rot + 1) & 3; camera.rotTarget += Math.PI/2; return;
+      case 'r': camera.tilt = clamp(camera.tilt + 0.05, 0.7, 1.0); return;
+      case 'f': camera.tilt = clamp(camera.tilt - 0.05, 0.7, 1.0); return;
+      case 'z': camera.zoom = clamp(camera.zoom + 0.1, 0.8, 1.6); return;
+      case 'x': camera.zoom = clamp(camera.zoom - 0.1, 0.8, 1.6); return;
+      case 'h': game.uiHints = !game.uiHints; document.getElementById('controls').classList.toggle('hidden', !game.uiHints); return;
+      case '0': if (playerTurn) autoBattleActiveUnit(); return;
+      case 'm': toggleMusic(); return;
+    }
+
+    if (!interactive) return;
+
+    switch (k) {
       // Cursor
       case 'arrowleft': moveCursor(-1, 0); break;
       case 'arrowright': moveCursor(1, 0); break;
@@ -783,6 +814,10 @@
   }
 
   function startTargeting(targeting) {
+    if (targeting.ability && targeting.ability.key === 'move' && game.turn.moved) {
+      showToast('Move already used');
+      return;
+    }
     game.phase = 'targeting';
     game.targeting = { ...targeting, cursor: { x: game.cursor.x, y: game.cursor.y } };
   }
@@ -805,6 +840,7 @@
     if (game.phase !== 'targeting' || !game.targeting) return;
     const t = game.targeting;
     if (t.ability.key === 'move') {
+      if (game.turn.moved) { showToast('Move already used'); return; }
       // Move unit to cursor if in range and passable
       const path = findPath(u.pos, { x: game.cursor.x, y: game.cursor.y }, u.stats.mov, u.stats.jump, u.team);
       if (path) {
