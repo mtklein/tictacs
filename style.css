@@ -13,6 +13,8 @@ canvas#game{position:absolute;inset:0;display:block;margin:auto;max-width:100%;m
 #controls .grid{display:grid;grid-template-columns:1fr;gap:4px;white-space:nowrap}
 #controls .k{display:inline-block;min-width:64px;padding:2px 6px;margin-right:6px;background:#1f2640;border:1px solid #2b3558;border-radius:6px;color:#bcd0ff;text-align:center}
 
+#musicToggle{position:absolute;top:16px;right:16px;background:rgba(15,19,32,.7);border:1px solid #2b3558;border-radius:8px;padding:6px 10px;color:var(--accent);box-shadow:0 2px 12px rgba(0,0,0,.3);pointer-events:auto}
+
 #commandPanel{position:absolute;left:16px;bottom:16px;min-width:300px;max-width:420px;background:rgba(18,22,36,.78);padding:10px 12px;border-radius:10px;box-shadow:0 2px 14px rgba(0,0,0,.35);pointer-events:auto}
 #commandPanel .title{font-weight:700;color:var(--accent);margin-bottom:6px}
 #commandPanel .cmd{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-radius:8px;margin:4px 0;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)}
