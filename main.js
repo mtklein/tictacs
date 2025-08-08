@@ -37,38 +37,47 @@
   const rnd = (min, max) => Math.random() * (max - min) + min;
   const irnd = (min, max) => (min + Math.floor(Math.random() * (max - min + 1)));
 
-  // Ambient lo-fi soundtrack inspired by Holst's "The Planets"
-  let audioStarted = false;
-  function startMusic() {
-    const ctxA = new (window.AudioContext || window.webkitAudioContext)();
-    const tempo = 0.8; // seconds per beat ~75bpm
-    function playNote(time, freq) {
-      const osc = ctxA.createOscillator();
-      const gain = ctxA.createGain();
-      const filt = ctxA.createBiquadFilter();
-      filt.type = 'lowpass';
-      filt.frequency.value = 1200;
-      osc.type = 'sawtooth';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.001, time);
-      gain.gain.linearRampToValueAtTime(0.08, time + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, time + tempo);
-      osc.connect(filt).connect(gain).connect(ctxA.destination);
-      osc.start(time);
-      osc.stop(time + tempo);
-    }
-    const pattern = [440, 523.25, 392, 349.23]; // simple motif
-    let beat = 0;
-    setInterval(() => {
-      const t = ctxA.currentTime;
-      playNote(t, pattern[beat % pattern.length]);
-      if (beat % 4 === 0) playNote(t, pattern[(beat + 2) % pattern.length] / 2);
-      beat++;
-    }, tempo * 1000);
+  // Ambient soundtrack with motifs from Mozart, Holst, and Berlioz
+  const music = { ctx: null, on: false, timer: null };
+  function playNote(ctxA, time, freq, duration) {
+    const osc = ctxA.createOscillator();
+    const gain = ctxA.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.001, time);
+    gain.gain.linearRampToValueAtTime(0.08, time + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
+    osc.connect(gain).connect(ctxA.destination);
+    osc.start(time);
+    osc.stop(time + duration);
   }
-  window.addEventListener('click', () => {
-    if (!audioStarted) { startMusic(); audioStarted = true; }
-  }, { once: true });
+  function startMusic() {
+    if (!music.ctx) music.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctxA = music.ctx;
+    const tempo = 0.2; // seconds per beat, faster and denser
+    const mozart = [392, 587, 784, 587];
+    const holst = [196, 233, 262, 233];
+    const berlioz = [330, 494, 440, 392];
+    let beat = 0;
+    music.timer = setInterval(() => {
+      const t = ctxA.currentTime;
+      playNote(ctxA, t, mozart[beat % mozart.length], tempo);
+      playNote(ctxA, t, holst[beat % holst.length] / 2, tempo);
+      if (beat % 2 === 0) playNote(ctxA, t, berlioz[beat % berlioz.length] * 2, tempo / 2);
+      beat++;
+    }, tempo * 500);
+  }
+  function stopMusic() {
+    if (music.timer) { clearInterval(music.timer); music.timer = null; }
+    if (music.ctx) music.ctx.suspend();
+  }
+  function toggleMusic() {
+    if (music.on) { stopMusic(); } else { startMusic(); music.ctx.resume?.(); }
+    music.on = !music.on;
+    const btn = document.getElementById('musicToggle');
+    if (btn) btn.textContent = `Music: ${music.on ? 'On' : 'Off'}`;
+  }
+  document.getElementById('musicToggle').addEventListener('click', toggleMusic);
 
   // Weather and battlefield ambiance
   const rainDrops = Array.from({ length: 80 }, () => ({
@@ -405,6 +414,38 @@
     ctx.fillStyle = tile.roof ? tint(tile.color, 12) : tile.color;
     ctx.fill();
 
+    // Connectors for gentle 0.5h slopes
+    const corners = (p) => ({
+      N: { x: p.x, y: p.y - hh },
+      E: { x: p.x + hw, y: p.y },
+      S: { x: p.x, y: p.y + hh },
+      W: { x: p.x - hw, y: p.y }
+    });
+    const cHigh = corners(top);
+    const dirs = [
+      { dx: 1, dy: 0, fromA: 'E', fromB: 'S', toA: 'W', toB: 'S' },
+      { dx: -1, dy: 0, fromA: 'W', fromB: 'S', toA: 'E', toB: 'S' },
+      { dx: 0, dy: 1, fromA: 'S', fromB: 'E', toA: 'N', toB: 'E' },
+      { dx: 0, dy: -1, fromA: 'N', fromB: 'E', toA: 'S', toB: 'E' }
+    ];
+    for (const d of dirs) {
+      const nx = x + d.dx, ny = y + d.dy;
+      if (nx < 0 || ny < 0 || nx >= map.w || ny >= map.h) continue;
+      const nh = map.tiles[ny][nx].h;
+      if (h - nh === 0.5) {
+        const lowTop = worldToScreen(nx, ny, nh);
+        const cLow = corners(lowTop);
+        ctx.beginPath();
+        ctx.moveTo(cHigh[d.fromA].x, cHigh[d.fromA].y);
+        ctx.lineTo(cHigh[d.fromB].x, cHigh[d.fromB].y);
+        ctx.lineTo(cLow[d.toB].x, cLow[d.toB].y);
+        ctx.lineTo(cLow[d.toA].x, cLow[d.toA].y);
+        ctx.closePath();
+        ctx.fillStyle = tint(tile.color, -15);
+        ctx.fill();
+      }
+    }
+
     // Details: windows or crenellations
     if (tile.roof && Math.random() < 0.001) { /* sparkle */ }
   }
@@ -434,13 +475,13 @@
       ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
       ctx.fillStyle = '#ffffff';
       ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 3;
-      ctx.strokeText(u.name, p.x, p.y - 38 * camera.zoom);
-      ctx.fillText(u.name, p.x, p.y - 38 * camera.zoom);
+      ctx.strokeText(u.name, p.x, p.y - 55 * camera.zoom);
+      ctx.fillText(u.name, p.x, p.y - 55 * camera.zoom);
       // HP bar
       const width = 34 * camera.zoom, height = 6 * camera.zoom;
-      ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(p.x - width / 2, p.y - 34 * camera.zoom, width, height);
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(p.x - width / 2, p.y - 50 * camera.zoom, width, height);
       ctx.fillStyle = u.team === 'Blue' ? 'rgba(79,195,247,0.9)' : 'rgba(255,107,107,0.9)';
-      ctx.fillRect(p.x - width / 2, p.y - 34 * camera.zoom, width * (u.stats.hp / u.stats.maxhp), height);
+      ctx.fillRect(p.x - width / 2, p.y - 50 * camera.zoom, width * (u.stats.hp / u.stats.maxhp), height);
     }
   }
 
@@ -498,7 +539,7 @@
       roundedRect(-10, -16, 20, 26, 6, u.color);
     }
     // Face on top
-    drawFace(0, -30, u.face, 2);
+      drawFace(0, -30, u.face, 3);
     ctx.restore();
   }
 
@@ -684,6 +725,7 @@
       case 'x': camera.zoom = clamp(camera.zoom - 0.1, 0.8, 1.6); break;
       case 'h': game.uiHints = !game.uiHints; document.getElementById('controls').classList.toggle('hidden', !game.uiHints); break;
       case '0': autoBattleActiveUnit(); break;
+      case 'm': toggleMusic(); break;
 
       // Cursor
       case 'arrowleft': moveCursor(-1, 0); break;
@@ -1036,9 +1078,9 @@
   function rotIndexCoord(x, y, rot) {
     switch (rot & 3) {
       case 0: return { x, y };
-      case 1: return { x: y, y: -x };
+      case 1: return { x: -y, y: x };
       case 2: return { x: -x, y: -y };
-      case 3: return { x: -y, y: x };
+      case 3: return { x: y, y: -x };
     }
   }
   function facingModifier(attacker, target) {
