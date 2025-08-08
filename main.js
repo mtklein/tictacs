@@ -175,16 +175,55 @@
   const idUnit = new Map(units.map(u => [u.id, u]));
 
   // Game State Machine
+  const Phase = Object.freeze({
+    IDLE: 'idle',
+    UNIT_START: 'unit_start',
+    COMMAND: 'command',
+    TARGETING: 'targeting',
+    ANIM: 'anim',
+    ANIM_ACTION: 'anim_action',
+  });
+
+  const PHASE_TRANSITIONS = {
+    [Phase.IDLE]: [Phase.UNIT_START],
+    [Phase.UNIT_START]: [Phase.COMMAND, Phase.TARGETING, Phase.ANIM, Phase.IDLE],
+    [Phase.COMMAND]: [Phase.TARGETING, Phase.UNIT_START, Phase.IDLE],
+    [Phase.TARGETING]: [Phase.COMMAND, Phase.UNIT_START, Phase.ANIM, Phase.ANIM_ACTION],
+    [Phase.ANIM]: [Phase.UNIT_START, Phase.TARGETING, Phase.ANIM_ACTION],
+    [Phase.ANIM_ACTION]: [Phase.IDLE, Phase.UNIT_START],
+  };
+
+  class StateMachine {
+    constructor(initial, transitions) {
+      this.state = initial;
+      this.transitions = transitions;
+    }
+    transition(to) {
+      if (this.state === to) return true;
+      const allowed = this.transitions[this.state] || [];
+      if (allowed.includes(to)) {
+        this.state = to;
+        return true;
+      }
+      console.warn(`Invalid phase transition: ${this.state} -> ${to}`);
+      return false;
+    }
+  }
+
+  const phaseMachine = new StateMachine(Phase.IDLE, PHASE_TRANSITIONS);
+
   const game = {
     map, units, idUnit,
     cursor: { x: 8, y: 8 },
-    phase: 'idle', // idle -> unit_start -> command -> targeting -> resolving
+    get phase() { return phaseMachine.state; },
+    set phase(p) { phaseMachine.transition(p); },
     activeId: null,
     selectedCmd: 0,
     targeting: null, // { ability, tiles:[], targets:[], origin:{x,y}, cursor:{x,y}, preview:{} }
     uiHints: true,
     time: 0,
     turn: { moved:false, acted:false },
+    phaseMachine,
   };
 
   // Initialize CT randomization for variety
@@ -220,7 +259,7 @@
           u.anim = null;
         }
         game.anim = null;
-        if (game.phase === 'anim') game.phase = 'unit_start';
+        if (game.phase === Phase.ANIM) game.phase = Phase.UNIT_START;
       } else {
         if (u) u.anim = { ...anim };
       }
@@ -231,7 +270,7 @@
     const step = Math.sign(diff) * Math.min(Math.abs(diff), speed * (dt/1000));
     camera.rotAngle += step;
     // Process CT to find next actor if idle
-    if (game.phase === 'idle') {
+    if (game.phase === Phase.IDLE) {
       // Advance CT to the next actor reaching 100
       const speeds = units.filter(u => u.alive !== false);
       if (speeds.length === 0) return;
@@ -241,7 +280,7 @@
       const next = speeds.find(u => u.ct >= 100);
       if (next) {
         game.activeId = next.id;
-        game.phase = 'unit_start';
+        game.phase = Phase.UNIT_START;
         game.selectedCmd = 0;
         game.cursor.x = next.pos.x; game.cursor.y = next.pos.y;
         game.turn = { moved:false, acted:false };
@@ -582,7 +621,7 @@
     }
 
     // Targeting preview overlays
-    if (game.phase === 'targeting' && game.targeting) {
+    if (game.phase === Phase.TARGETING && game.targeting) {
       const t = game.targeting;
       const tiles = computeAbilityTiles(t.origin, t.ability);
       const targets = [];
@@ -650,15 +689,15 @@
     let text = '';
     const active = idUnit.get(game.activeId);
     if (!active) {
-      if (game.phase === 'idle') text = 'Processing...';
+      if (game.phase === Phase.IDLE) text = 'Processing...';
     } else if (active.team === 'Red') {
-      if (game.phase === 'unit_start' || game.phase === 'command' || game.phase === 'targeting') text = 'Enemy turn';
-      else if (game.phase === 'anim' || game.phase === 'anim_action') text = 'Enemy acting...';
+      if (game.phase === Phase.UNIT_START || game.phase === Phase.COMMAND || game.phase === Phase.TARGETING) text = 'Enemy turn';
+      else if (game.phase === Phase.ANIM || game.phase === Phase.ANIM_ACTION) text = 'Enemy acting...';
     } else {
-      if (game.phase === 'unit_start') text = 'Choose command';
-      else if (game.phase === 'command') text = 'Select action';
-      else if (game.phase === 'targeting') text = 'Select target';
-      else if (game.phase === 'anim' || game.phase === 'anim_action') text = 'Resolving...';
+      if (game.phase === Phase.UNIT_START) text = 'Choose command';
+      else if (game.phase === Phase.COMMAND) text = 'Select action';
+      else if (game.phase === Phase.TARGETING) text = 'Select target';
+      else if (game.phase === Phase.ANIM || game.phase === Phase.ANIM_ACTION) text = 'Resolving...';
     }
     stateIndicator.textContent = text;
     stateIndicator.style.opacity = text ? 1 : 0;
@@ -740,7 +779,7 @@
   function handleKey(k) {
     const u = idUnit.get(game.activeId);
     const playerTurn = u && u.team === 'Blue';
-    const interactive = playerTurn && (game.phase === 'unit_start' || game.phase === 'command' || game.phase === 'targeting');
+    const interactive = playerTurn && (game.phase === Phase.UNIT_START || game.phase === Phase.COMMAND || game.phase === Phase.TARGETING);
 
     // Camera and global toggles are always available
     switch (k) {
@@ -794,11 +833,11 @@
   }
 
   function selectCommand(idx) {
-    if (game.phase !== 'unit_start' && game.phase !== 'command') return;
+    if (game.phase !== Phase.UNIT_START && game.phase !== Phase.COMMAND) return;
     const u = idUnit.get(game.activeId);
     const cmds = computeAvailableCommands(u);
     if (idx < 0 || idx >= cmds.length) return;
-    game.phase = 'command';
+    game.phase = Phase.COMMAND;
     game.selectedCmd = idx;
     const c = cmds[idx];
     if (c.disabled) { showToast('Command unavailable'); return; }
@@ -818,17 +857,17 @@
       showToast('Move already used');
       return;
     }
-    game.phase = 'targeting';
+    game.phase = Phase.TARGETING;
     game.targeting = { ...targeting, cursor: { x: game.cursor.x, y: game.cursor.y } };
   }
 
   function cancelAction() {
-    if (game.phase === 'targeting') {
-      game.phase = 'unit_start';
+    if (game.phase === Phase.TARGETING) {
+      game.phase = Phase.UNIT_START;
       game.targeting = null;
-    } else if (game.phase === 'command') {
-      game.phase = 'unit_start';
-    } else if (game.phase === 'unit_start') {
+    } else if (game.phase === Phase.COMMAND) {
+      game.phase = Phase.UNIT_START;
+    } else if (game.phase === Phase.UNIT_START) {
       // do nothing
     }
   }
@@ -836,8 +875,8 @@
   function confirmAction() {
     const u = idUnit.get(game.activeId);
     if (!u) return;
-    if (game.phase === 'unit_start') { game.phase = 'command'; return; }
-    if (game.phase !== 'targeting' || !game.targeting) return;
+    if (game.phase === Phase.UNIT_START) { game.phase = Phase.COMMAND; return; }
+    if (game.phase !== Phase.TARGETING || !game.targeting) return;
     const t = game.targeting;
     if (t.ability.key === 'move') {
       if (game.turn.moved) { showToast('Move already used'); return; }
@@ -849,7 +888,7 @@
         game.anim = { kind:'move', unitId:u.id, path, index:0, t:0, speed:6.0 };
         awardJP(u, 5);
         showToast(`${u.name} moved.`);
-        game.phase = 'anim';
+        game.phase = Phase.ANIM;
         game.targeting = null;
         game.turn.moved = true;
         return;
@@ -872,7 +911,7 @@
     game.pendingAction = { caster: u, exp: 0, jp: 8, ct: t.ability.ct };
     setFacingTowards(u, { x: game.cursor.x, y: game.cursor.y });
     game.targeting = null;
-    game.phase = 'anim_action';
+    game.phase = Phase.ANIM_ACTION;
   }
 
   function resolveProjectile(p) {
@@ -900,7 +939,7 @@
 
   function endTurn(u, ctCost) {
     u.ct = Math.max(0, 0 - (ctCost || 0)); // push back in timeline; negative means extra time
-    game.phase = 'idle';
+    game.phase = Phase.IDLE;
     game.activeId = null;
   }
 
@@ -981,7 +1020,7 @@
     const result = [];
     // If currently previewing an action, apply its CT cost to active unit after it acts
     const active = gameState.activeId ? idUnit.get(gameState.activeId) : null;
-    const ability = (gameState.phase === 'targeting' && gameState.targeting) ? gameState.targeting.ability : null;
+    const ability = (gameState.phase === Phase.TARGETING && gameState.targeting) ? gameState.targeting.ability : null;
 
     for (let k = 0; k < count; k++) {
       // Advance to next reaching 100
@@ -1319,7 +1358,7 @@
         const val = eff.filter(e=>idUnit.get(e.id).team===u.team).reduce((s,e)=>s + e.amount*e.hit,0);
         if (val>0 && (!best || val>best.value)) best = { ability:cure, tile, value:val };
       }
-      if (best){ game.phase='targeting'; game.targeting={ability:cure, origin:{x:u.pos.x,y:u.pos.y}, cursor:best.tile}; confirmAction(); return; }
+      if (best){ game.phase = Phase.TARGETING; game.targeting={ability:cure, origin:{x:u.pos.x,y:u.pos.y}, cursor:best.tile}; confirmAction(); return; }
     }
     // otherwise, move toward most injured ally
     if (allies.length){
@@ -1339,12 +1378,12 @@
         const val = eff.reduce((s,e)=> s + (idUnit.get(e.id).team!==u.team ? e.amount*e.hit : -e.amount*0.5), 0);
         if (val>5 && (!best || val>best.value)) best={ ability:fire, tile, value:val };
       }
-      if (best){ game.phase='targeting'; game.targeting={ability:fire, origin:{x:u.pos.x,y:u.pos.y}, cursor:best.tile}; confirmAction(); return; }
+      if (best){ game.phase = Phase.TARGETING; game.targeting={ability:fire, origin:{x:u.pos.x,y:u.pos.y}, cursor:best.tile}; confirmAction(); return; }
     }
     // else basic attack if adjacent
     const enemies = units.filter(x=>x.team!==u.team && x.alive!==false);
     const near = enemies.find(t=>gridDist(u.pos, t.pos)<=1);
-    if (near){ game.phase='targeting'; game.targeting={ability:JOBS[u.job].attack, origin:{x:u.pos.x,y:u.pos.y}, cursor:near.pos}; confirmAction(); return; }
+    if (near){ game.phase = Phase.TARGETING; game.targeting={ability:JOBS[u.job].attack, origin:{x:u.pos.x,y:u.pos.y}, cursor:near.pos}; confirmAction(); return; }
     // move toward cluster of enemies
     const target = enemies.sort((a,b)=> gridDist(u.pos,a.pos)-gridDist(u.pos,b.pos))[0];
     return aiMoveTowardAndMaybeAttack(u, target);
@@ -1368,11 +1407,11 @@
       if (best.from.x!==u.pos.x || best.from.y!==u.pos.y){
         // move first
         const path = findPath(u.pos, best.from, u.stats.mov, u.stats.jump, u.team);
-        if (path){ u.anim={kind:'move', path, index:0, t:0, speed:6.0}; game.anim={...u.anim, unitId:u.id}; game.phase='anim';
-          setTimeout(()=>{ game.phase='targeting'; game.targeting={ability:best.ability, origin:{x:best.from.x,y:best.from.y}, cursor:best.tile}; confirmAction(); }, 400);
+        if (path){ u.anim={kind:'move', path, index:0, t:0, speed:6.0}; game.anim={...u.anim, unitId:u.id}; game.phase = Phase.ANIM;
+          setTimeout(()=>{ game.phase = Phase.TARGETING; game.targeting={ability:best.ability, origin:{x:best.from.x,y:best.from.y}, cursor:best.tile}; confirmAction(); }, 400);
           return; }
       }
-      game.phase='targeting'; game.targeting={ability:best.ability, origin:{x:u.pos.x,y:u.pos.y}, cursor:best.tile}; confirmAction(); return;
+      game.phase = Phase.TARGETING; game.targeting={ability:best.ability, origin:{x:u.pos.x,y:u.pos.y}, cursor:best.tile}; confirmAction(); return;
     }
     // otherwise kite away from nearest enemy
     const enemies = units.filter(x=>x.team!==u.team && x.alive!==false);
@@ -1385,7 +1424,7 @@
     const adjacent = enemies.find(t=>gridDist(u.pos,t.pos)<=1);
     if (adjacent){
       const ab = u.abilities.find(a=>a.key==='smite') || JOBS[u.job].attack;
-      game.phase='targeting'; game.targeting={ability:ab, origin:{x:u.pos.x,y:u.pos.y}, cursor:adjacent.pos}; confirmAction(); return;
+      game.phase = Phase.TARGETING; game.targeting={ability:ab, origin:{x:u.pos.x,y:u.pos.y}, cursor:adjacent.pos}; confirmAction(); return;
     }
     // Else move to back/side if possible near nearest
     const target = enemies.sort((a,b)=> gridDist(u.pos,a.pos)-gridDist(u.pos,b.pos))[0];
@@ -1400,7 +1439,7 @@
     if (best){ u.pos.x = best.to.x; u.pos.y = best.to.y; showToast(`${u.name} advances.`); }
     // Try attack if now adjacent
     const adj2 = enemies.find(t=>gridDist(u.pos,t.pos)<=1);
-    if (adj2){ const ab = u.abilities.find(a=>a.key==='smite') || JOBS[u.job].attack; game.phase='targeting'; game.targeting={ability:ab, origin:{x:u.pos.x,y:u.pos.y}, cursor:adj2.pos}; confirmAction(); return; }
+    if (adj2){ const ab = u.abilities.find(a=>a.key==='smite') || JOBS[u.job].attack; game.phase = Phase.TARGETING; game.targeting={ability:ab, origin:{x:u.pos.x,y:u.pos.y}, cursor:adj2.pos}; confirmAction(); return; }
     return endTurn(u, 15);
   }
 
@@ -1435,7 +1474,7 @@
     const ab = JOBS[u.job].attack;
     const eff = computeAbilityEffectAtCursor({ ability:ab, origin:u.pos, cursor: target.pos });
     const vsEnemy = eff.filter(e=>idUnit.get(e.id).team!==u.team);
-    if (vsEnemy.length){ game.phase='targeting'; game.targeting={ability:ab, origin:{x:u.pos.x,y:u.pos.y}, cursor:target.pos}; confirmAction(); return; }
+    if (vsEnemy.length){ game.phase = Phase.TARGETING; game.targeting={ability:ab, origin:{x:u.pos.x,y:u.pos.y}, cursor:target.pos}; confirmAction(); return; }
     return endTurn(u, 12);
   }
 
