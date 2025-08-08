@@ -128,6 +128,7 @@
     targeting: null, // { ability, tiles:[], targets:[], origin:{x,y}, cursor:{x,y}, preview:{} }
     uiHints: true,
     time: 0,
+    turn: { moved:false, acted:false },
   };
 
   // Initialize CT randomization for variety
@@ -164,7 +165,7 @@
       }
     }
     // Smooth camera rotation toward target
-    const diff = ((camera.rotTarget - camera.rotAngle + Math.PI*3) % (Math.PI*2)) - Math.PI;
+    const diff = (camera.rotTarget - camera.rotAngle);
     const speed = 6.5; // rad/s
     const step = Math.sign(diff) * Math.min(Math.abs(diff), speed * (dt/1000));
     camera.rotAngle += step;
@@ -182,6 +183,7 @@
         game.phase = 'unit_start';
         game.selectedCmd = 0;
         game.cursor.x = next.pos.x; game.cursor.y = next.pos.y;
+        game.turn = { moved:false, acted:false };
         showToast(`${next.name}'s turn`);
         // Simple AI for Red team
         if (next.team === 'Red') {
@@ -455,7 +457,7 @@
     const cmds = computeAvailableCommands(u);
     let html = `<div class="title">Commands${u ? ` — ${u.name} (${u.job})` : ''}</div>`;
     cmds.forEach((c, i) => {
-      html += `<div class="cmd ${i === game.selectedCmd ? 'active' : ''}">`+
+      html += `<div class="cmd ${i === game.selectedCmd ? 'active' : ''} ${c.disabled ? 'disabled' : ''}">`+
               `<div><span class="key">${i+1}</span> ${c.name}</div>`+
               `<div>${c.detail || ''}</div>`+
               `</div>`;
@@ -494,10 +496,10 @@
   function computeAvailableCommands(u) {
     if (!u) return [ { name: '—', detail:'' } ];
     const base = [
-      { key:'move', name:'Move', detail:`Up to ${u.stats.mov}` },
-      { key:'attack', name:'Attack', detail:`Rng 1, CT +${JOBS[u.job].attack.ct}` },
+      { key:'move', name:'Move', detail: game.turn.moved ? 'Used' : `Up to ${u.stats.mov}`, disabled: game.turn.moved },
+      { key:'attack', name:'Attack', detail:`Rng 1, CT +${JOBS[u.job].attack.ct}`, disabled: game.turn.acted },
     ];
-    for (const a of u.abilities) base.push({ key:'ability', ability:a, name:a.name, detail:`Rng ${a.range} AOE ${a.aoe||0} CT +${a.ct}`});
+    for (const a of u.abilities) base.push({ key:'ability', ability:a, name:a.name, detail:`Rng ${a.range} AOE ${a.aoe||0} CT +${a.ct}`, disabled: game.turn.acted });
     base.push({ key:'wait', name:'Wait', detail:'End turn' });
     return base;
   }
@@ -526,8 +528,8 @@
     const u = idUnit.get(game.activeId);
     switch (k) {
       // Camera
-      case 'q': camera.rot = (camera.rot + 3) & 3; camera.rotTarget = camera.rot * (Math.PI/2); break;
-      case 'e': camera.rot = (camera.rot + 1) & 3; camera.rotTarget = camera.rot * (Math.PI/2); break;
+      case 'q': camera.rot = (camera.rot + 3) & 3; camera.rotTarget -= Math.PI/2; break;
+      case 'e': camera.rot = (camera.rot + 1) & 3; camera.rotTarget += Math.PI/2; break;
       case 'r': camera.tilt = clamp(camera.tilt + 0.05, 0.7, 1.0); break;
       case 'f': camera.tilt = clamp(camera.tilt - 0.05, 0.7, 1.0); break;
       case 'z': camera.zoom = clamp(camera.zoom + 0.1, 0.8, 1.6); break;
@@ -578,6 +580,7 @@
     game.phase = 'command';
     game.selectedCmd = idx;
     const c = cmds[idx];
+    if (c.disabled) { showToast('Command unavailable'); return; }
     if (c.key === 'move') {
       startTargeting({ ability: { name:'Move', key:'move', range:u.stats.mov, aoe:0, kind:'move', ct: 10 }, origin: { x: u.pos.x, y: u.pos.y } });
     } else if (c.key === 'attack') {
@@ -613,7 +616,7 @@
     const t = game.targeting;
     if (t.ability.key === 'move') {
       // Move unit to cursor if in range and passable
-      const path = findPath(u.pos, { x: game.cursor.x, y: game.cursor.y }, u.stats.mov, u.stats.jump);
+      const path = findPath(u.pos, { x: game.cursor.x, y: game.cursor.y }, u.stats.mov, u.stats.jump, u.team);
       if (path) {
         // animate movement
         u.anim = { kind:'move', path, index:0, t:0, speed:6.0 };
@@ -622,6 +625,7 @@
         showToast(`${u.name} moved.`);
         game.phase = 'anim';
         game.targeting = null;
+        game.turn.moved = true;
         return;
       } else {
         showToast('Invalid move');
@@ -651,6 +655,7 @@
     setFacingTowards(u, { x: game.cursor.x, y: game.cursor.y });
     awardEXP(u, Math.max(10, exp));
     awardJP(u, jp);
+    game.turn.acted = true;
     endTurn(u, t.ability.ct);
     game.targeting = null;
   }
@@ -758,11 +763,12 @@
   }
 
   // Pathfinding (simple BFS with height/jump constraints)
-  function findPath(from, to, range, jump) {
+  function findPath(from, to, range, jump, team) {
     if (!insideMap(to.x, to.y)) return null;
+    const occMap = new Map(units.filter(u=>u.alive!==false).map(u=>[`${u.pos.x},${u.pos.y}`, u]));
     // Disallow landing on occupied tile (unless it's the start)
-    const occupied = new Set(units.filter(u=>u.alive!==false).map(u=>`${u.pos.x},${u.pos.y}`));
-    occupied.delete(`${from.x},${from.y}`);
+    const goalKey = `${to.x},${to.y}`;
+    if (occMap.has(goalKey) && goalKey !== `${from.x},${from.y}`) return null;
     const start = `${from.x},${from.y}`;
     const goal = `${to.x},${to.y}`;
     const q = [start];
@@ -776,7 +782,8 @@
         const nx = cx + dx, ny = cy + dy;
         if (!insideMap(nx, ny)) continue;
         if (!map.tiles[ny][nx].pass) continue;
-        if (occupied.has(`${nx},${ny}`)) continue;
+        const occ = occMap.get(`${nx},${ny}`);
+        if (occ && occ.team !== team) continue; // cannot pass enemy
         const h1 = map.tiles[cy][cx].h, h2 = map.tiles[ny][nx].h;
         if (Math.abs(h2 - h1) > jump) continue;
         const key = `${nx},${ny}`;
@@ -906,23 +913,32 @@
     ctx.save();
     ctx.translate(x,y);
     // head
-    ctx.fillStyle = face.skin; ctx.beginPath(); ctx.arc(0,0,3,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = face.skin; ctx.beginPath(); ctx.arc(0,0,3.2,0,Math.PI*2); ctx.fill();
     // hair styles
     ctx.fillStyle = face.hair;
-    if (face.style===0){ ctx.beginPath(); ctx.arc(0,-1,4,Math.PI,0); ctx.fill(); }
-    else if (face.style===1){ ctx.fillRect(-3,-2,6,2); }
-    else if (face.style===2){ for(let i=-3;i<=3;i+=2){ ctx.beginPath(); ctx.moveTo(i,-3); ctx.lineTo(i+1,-5); ctx.lineTo(i+2,-3); ctx.fill(); } }
-    else if (face.style===3){ ctx.fillRect(-3,-3,6,1); }
-    else if (face.style===4){ ctx.fillStyle = '#2a2a2a'; ctx.fillRect(-4,-4,8,2); }
-    // eyes
-    ctx.fillStyle = face.eye; ctx.fillRect(-2,-1,1,1); ctx.fillRect(1,-1,1,1);
+    if (face.style===0){ ctx.beginPath(); ctx.arc(0,-1,4.5,Math.PI,0); ctx.fill(); }
+    else if (face.style===1){ ctx.fillRect(-3.5,-2.2,7,2.2); }
+    else if (face.style===2){ for(let i=-3;i<=3;i+=2){ ctx.beginPath(); ctx.moveTo(i,-3.2); ctx.lineTo(i+1,-5.4); ctx.lineTo(i+2,-3.2); ctx.fill(); } }
+    else if (face.style===3){ ctx.fillRect(-3.5,-3.2,7,1.2); }
+    else if (face.style===4){ ctx.fillStyle = '#2a2a2a'; ctx.fillRect(-4.2,-4,8.4,2.2); }
+    // anime eyes (no nose)
+    // whites
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(-1.8,-0.6,1.2,1.6,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(1.8,-0.6,1.2,1.6,0,0,Math.PI*2); ctx.fill();
+    // iris
+    ctx.fillStyle = face.eye; ctx.beginPath(); ctx.arc(-1.8,-0.6,0.7,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(1.8,-0.6,0.7,0,Math.PI*2); ctx.fill();
+    // highlights
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-2.1,-0.9,0.25,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(1.5,-0.9,0.25,0,Math.PI*2); ctx.fill();
     // brows
-    ctx.fillStyle = '#2a1a0a'; if(face.brows>=1){ ctx.fillRect(-2,-2,2,1); ctx.fillRect(0,-2,2,1); }
-    if(face.brows===2){ ctx.fillRect(-2,-3,2,1); ctx.fillRect(0,-3,2,1); }
+    ctx.fillStyle = '#2a1a0a'; if(face.brows>=1){ ctx.fillRect(-3.0,-2.2,2.0,0.7); ctx.fillRect(1.0,-2.2,2.0,0.7); }
+    if(face.brows===2){ ctx.fillRect(-3.0,-2.9,2.0,0.6); ctx.fillRect(1.0,-2.9,2.0,0.6); }
+    // mouth
+    ctx.fillStyle = '#cc6b6b'; ctx.fillRect(-0.6,1.2,1.2,0.4);
     // accessory
-    if (face.accessory==='glasses'){ ctx.strokeStyle='#c0d0ff'; ctx.lineWidth=0.6; ctx.strokeRect(-3,-2,2,2); ctx.strokeRect(1,-2,2,2); ctx.beginPath(); ctx.moveTo(-1,-1); ctx.lineTo(1,-1); ctx.stroke(); }
+    if (face.accessory==='glasses'){ ctx.strokeStyle='#c0d0ff'; ctx.lineWidth=0.6; ctx.strokeRect(-3,-2,2.4,1.8); ctx.strokeRect(0.6,-2,2.4,1.8); ctx.beginPath(); ctx.moveTo(-0.6,-1.1); ctx.lineTo(0.6,-1.1); ctx.stroke(); }
     if (face.accessory==='ribbon'){ ctx.fillStyle='#ff6bb6'; ctx.fillRect(-1,-4,2,1); }
-    if (face.accessory==='beard'){ ctx.fillStyle='#5a3826'; ctx.fillRect(-2,1,4,1); }
+    if (face.accessory==='beard'){ ctx.fillStyle='#5a3826'; ctx.fillRect(-2,1.2,4,1); }
     ctx.restore();
   }
 
@@ -1105,7 +1121,7 @@
     if (best){
       if (best.from.x!==u.pos.x || best.from.y!==u.pos.y){
         // move first
-        const path = findPath(u.pos, best.from, u.stats.mov, u.stats.jump);
+        const path = findPath(u.pos, best.from, u.stats.mov, u.stats.jump, u.team);
         if (path){ u.anim={kind:'move', path, index:0, t:0, speed:6.0}; game.anim={...u.anim, unitId:u.id}; game.phase='anim';
           setTimeout(()=>{ game.phase='targeting'; game.targeting={ability:best.ability, origin:{x:best.from.x,y:best.from.y}, cursor:best.tile}; confirmAction(); }, 400);
           return; }
@@ -1132,7 +1148,7 @@
     let best=null;
     for (const d of dirs){
       const tx = target.pos.x + d.dx, ty = target.pos.y + d.dy;
-      const path = findPath(u.pos, {x:tx,y:ty}, u.stats.mov, u.stats.jump);
+      const path = findPath(u.pos, {x:tx,y:ty}, u.stats.mov, u.stats.jump, u.team);
       if (path){ const score = d.score - path.length*0.1; if (!best || score>best.score) best={ to:{x:tx,y:ty}, score } }
     }
     if (best){ u.pos.x = best.to.x; u.pos.y = best.to.y; showToast(`${u.name} advances.`); }
