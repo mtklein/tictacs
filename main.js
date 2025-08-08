@@ -37,6 +37,52 @@
   const rnd = (min, max) => Math.random() * (max - min) + min;
   const irnd = (min, max) => (min + Math.floor(Math.random() * (max - min + 1)));
 
+  // Ambient lo-fi soundtrack inspired by Holst's "The Planets"
+  let audioStarted = false;
+  function startMusic() {
+    const ctxA = new (window.AudioContext || window.webkitAudioContext)();
+    const tempo = 0.8; // seconds per beat ~75bpm
+    function playNote(time, freq) {
+      const osc = ctxA.createOscillator();
+      const gain = ctxA.createGain();
+      const filt = ctxA.createBiquadFilter();
+      filt.type = 'lowpass';
+      filt.frequency.value = 1200;
+      osc.type = 'sawtooth';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.001, time);
+      gain.gain.linearRampToValueAtTime(0.08, time + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + tempo);
+      osc.connect(filt).connect(gain).connect(ctxA.destination);
+      osc.start(time);
+      osc.stop(time + tempo);
+    }
+    const pattern = [440, 523.25, 392, 349.23]; // simple motif
+    let beat = 0;
+    setInterval(() => {
+      const t = ctxA.currentTime;
+      playNote(t, pattern[beat % pattern.length]);
+      if (beat % 4 === 0) playNote(t, pattern[(beat + 2) % pattern.length] / 2);
+      beat++;
+    }, tempo * 1000);
+  }
+  window.addEventListener('click', () => {
+    if (!audioStarted) { startMusic(); audioStarted = true; }
+  }, { once: true });
+
+  // Weather and battlefield ambiance
+  const rainDrops = Array.from({ length: 80 }, () => ({
+    x: Math.random() * canvas.width,
+    y: Math.random() * canvas.height,
+    speed: rnd(200, 400)
+  }));
+  let lightningFlash = 0;
+  let lightningTimer = rnd(4000, 8000);
+
+  // Action FX containers
+  let projectiles = [];
+  let popups = [];
+
   // Camera and Iso projection
   const camera = {
     rot: 0,             // 0..3 => 0,90,180,270
@@ -187,10 +233,42 @@
         showToast(`${next.name}'s turn`);
         // Simple AI for Red team
         if (next.team === 'Red') {
-          setTimeout(() => aiAct(next), 250);
+          setTimeout(() => aiAct(next), 2000);
         }
       }
     }
+
+    // Weather updates
+    for (const drop of rainDrops) {
+      drop.y += drop.speed * (dt / 1000);
+      drop.x -= 30 * (dt / 1000);
+      if (drop.y > canvas.height) { drop.y = -10; drop.x = Math.random() * canvas.width; }
+      if (drop.x < -20) drop.x = canvas.width + 10;
+    }
+    lightningTimer -= dt;
+    if (lightningTimer <= 0) { lightningFlash = 1; lightningTimer = rnd(4000, 8000); }
+    if (lightningFlash > 0) lightningFlash = Math.max(0, lightningFlash - dt / 400);
+
+    // Projectile animations
+    if (projectiles.length) {
+      for (const p of projectiles) {
+        p.t += dt / p.duration;
+        if (p.t >= 1 && !p.done) { resolveProjectile(p); p.done = true; }
+      }
+      if (projectiles.every(p => p.done)) {
+        const act = game.pendingAction;
+        if (act) {
+          awardEXP(act.caster, Math.max(10, act.exp));
+          awardJP(act.caster, act.jp);
+          game.turn.acted = true;
+          endTurn(act.caster, act.ct);
+          game.pendingAction = null;
+        }
+        projectiles = [];
+      }
+    }
+    // Floating popups
+    popups = popups.filter(p => (p.life -= dt) > 0);
   }
 
   // Rendering
@@ -200,9 +278,12 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     drawSkyBackdrop();
+    drawRain();
     drawMap();
     drawHighlightsAndPreviews();
     drawUnits();
+    drawProjectiles();
+    drawPopups();
     drawCursor();
     drawUI();
     ctx.restore();
@@ -213,6 +294,46 @@
     g.addColorStop(0, '#0c1122');
     g.addColorStop(1, '#0a0f1d');
     ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Stained glass windows
+    for (let i = 0; i < 3; i++) {
+      const wx = 100 + i * 300;
+      const colors = ['#6b2f6b', '#2f6b6b', '#6b6b2f'];
+      ctx.fillStyle = colors[i % colors.length];
+      ctx.fillRect(wx, 80, 80, 160);
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.lineWidth = 4; ctx.strokeRect(wx, 80, 80, 160);
+    }
+
+    // Chandeliers
+    for (let i = 0; i < 2; i++) {
+      const cx = 200 + i * 400;
+      ctx.strokeStyle = '#bba';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, 60); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, 70, 40, 0, Math.PI); ctx.stroke();
+      for (let j = -2; j <= 2; j++) {
+        ctx.beginPath(); ctx.arc(cx + j * 20, 70, 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffebaf'; ctx.fill();
+      }
+    }
+
+    // Lightning flash overlay
+    if (lightningFlash > 0) {
+      ctx.fillStyle = `rgba(255,255,255,${lightningFlash})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+
+  function drawRain() {
+    ctx.strokeStyle = 'rgba(200,200,255,0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const d of rainDrops) {
+      ctx.moveTo(d.x, d.y);
+      ctx.lineTo(d.x + 2, d.y + 10);
+    }
+    ctx.stroke();
   }
 
   function drawMap() {
@@ -323,6 +444,31 @@
     }
   }
 
+  function drawProjectiles() {
+    for (const p of projectiles) {
+      const s = worldToScreen(p.start.x, p.start.y, p.start.z);
+      const e = worldToScreen(p.end.x, p.end.y, p.end.z);
+      const x = lerp(s.x, e.x, Math.min(1, p.t));
+      const y = lerp(s.y, e.y, Math.min(1, p.t));
+      ctx.fillStyle = p.info.kind === 'heal' ? '#7be495' : '#ff8e72';
+      ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function drawPopups() {
+    ctx.font = `${Math.round(14 * camera.zoom)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    for (const p of popups) {
+      const pos = worldToScreen(p.pos.x, p.pos.y, p.pos.z);
+      const prog = 1 - (p.life / p.max);
+      ctx.globalAlpha = p.life / p.max;
+      ctx.fillStyle = p.color;
+      ctx.fillText(p.text, pos.x, pos.y - 20 * prog);
+      ctx.globalAlpha = 1;
+    }
+  }
+
   function drawActorSprite(x, y, u) {
     ctx.save();
     ctx.translate(x, y);
@@ -351,8 +497,8 @@
     } else {
       roundedRect(-10, -16, 20, 26, 6, u.color);
     }
-    // Face
-    drawFace(0, -6, u.face || generateFace(u.name));
+    // Face on top
+    drawFace(0, -30, u.face, 2);
     ctx.restore();
   }
 
@@ -454,6 +600,7 @@
 
   function renderCommandPanel() {
     const u = idUnit.get(game.activeId);
+    if (!u || u.team === 'Red') { commandPanel.innerHTML = ''; return; }
     const cmds = computeAvailableCommands(u);
     let html = `<div class="title">Commands${u ? ` — ${u.name} (${u.job})` : ''}</div>`;
     cmds.forEach((c, i) => {
@@ -485,7 +632,7 @@
       if (!u) continue;
       const bg = u.team === 'Blue' ? 'linear-gradient(135deg,#1e4a6b,#2f6c9c)' : 'linear-gradient(135deg,#6b1e1e,#9c2f2f)';
       html += `<div class="entry">`+
-              `<div class="portrait" style="background:${bg};border-color:${u.team==='Blue'?'#4fc3f7aa':'#ff6b6baa'}"></div>`+
+              `<div class="portrait" style="background:${bg};border-color:${u.team==='Blue'?'#4fc3f7aa':'#ff6b6baa'}"><img src="${u.faceImg}" alt="${u.name}"/></div>`+
               `<div class="meta"><div class="name">${u.name}</div><div class="ct">CT ${f.ct.toFixed(0)}${f.note?(' — '+f.note):''}</div></div>`+
               `</div>`;
     }
@@ -526,6 +673,7 @@
 
   function handleKey(k) {
     const u = idUnit.get(game.activeId);
+    if (u && u.team === 'Red') return;
     switch (k) {
       // Camera
       case 'q': camera.rot = (camera.rot + 3) & 3; camera.rotTarget -= Math.PI/2; break;
@@ -632,32 +780,44 @@
         return;
       }
     }
-    // Resolve offensive/heal abilities
+    // Resolve offensive/heal abilities with animation
     const affected = computeAbilityEffectAtCursor({ ...t, cursor: { x: game.cursor.x, y: game.cursor.y } });
     if (affected.length === 0) { showToast('No valid targets'); return; }
-    let exp = 0, jp = 8;
+    projectiles = [];
     for (const a of affected) {
       const target = idUnit.get(a.id);
-      const hitRoll = Math.random();
-      if (hitRoll <= a.hit) {
-        if (a.kind === 'heal') {
-          const before = target.stats.hp;
-          target.stats.hp = clamp(target.stats.hp + a.amount, 0, target.stats.maxhp);
-          exp += Math.min(15, Math.round((target.stats.hp - before) * 0.5));
-        } else {
-          target.stats.hp = clamp(target.stats.hp - a.amount, 0, target.stats.maxhp);
-          exp += Math.min(30, Math.round(a.amount * 0.5));
-          if (target.stats.hp <= 0) { target.alive = false; showToast(`${target.name} is KO!`); exp += 20; }
-        }
-      }
+      if (!target) continue;
+      const start = { x: u.pos.x, y: u.pos.y, z: map.tiles[u.pos.y][u.pos.x].h + 0.8 };
+      const end = { x: target.pos.x, y: target.pos.y, z: map.tiles[target.pos.y][target.pos.x].h + 0.8 };
+      projectiles.push({ start, end, t: 0, duration: 400, info: a });
     }
-    // Face toward action center
+    game.pendingAction = { caster: u, exp: 0, jp: 8, ct: t.ability.ct };
     setFacingTowards(u, { x: game.cursor.x, y: game.cursor.y });
-    awardEXP(u, Math.max(10, exp));
-    awardJP(u, jp);
-    game.turn.acted = true;
-    endTurn(u, t.ability.ct);
     game.targeting = null;
+    game.phase = 'anim_action';
+  }
+
+  function resolveProjectile(p) {
+    const action = game.pendingAction;
+    const a = p.info;
+    const target = idUnit.get(a.id);
+    if (!target) return;
+    const pos = { x: target.pos.x, y: target.pos.y, z: map.tiles[target.pos.y][target.pos.x].h + 0.8 };
+    const hitRoll = Math.random();
+    if (hitRoll <= a.hit) {
+      if (a.kind === 'heal') {
+        const before = target.stats.hp;
+        target.stats.hp = clamp(target.stats.hp + a.amount, 0, target.stats.maxhp);
+        action.exp += Math.min(15, Math.round((target.stats.hp - before) * 0.5));
+      } else {
+        target.stats.hp = clamp(target.stats.hp - a.amount, 0, target.stats.maxhp);
+        action.exp += Math.min(30, Math.round(a.amount * 0.5));
+        if (target.stats.hp <= 0) { target.alive = false; showToast(`${target.name} is KO!`); action.exp += 20; }
+      }
+      popups.push({ pos, text: a.kind==='heal'?`+${a.amount}`:`-${a.amount}`, color: a.kind==='heal'?'#7be495':'#ff8e72', life:1000, max:1000 });
+    } else {
+      popups.push({ pos, text:'MISS', color:'#fff', life:1000, max:1000 });
+    }
   }
 
   function endTurn(u, ctCost) {
@@ -909,37 +1069,44 @@
     const accessory = r()<0.15 ? (gender==='M'?'beard':'ribbon') : (r()<0.15?'glasses':null);
     return { gender, skin, eye, hair, style, brows, accessory };
   }
-  function drawFace(x,y,face){
-    ctx.save();
-    ctx.translate(x,y);
+  function drawFace(x,y,face,scale=1){
+    drawFaceTo(ctx,x,y,face,scale);
+  }
+
+  function drawFaceTo(c,x,y,face,scale=1){
+    c.save();
+    c.translate(x,y);
+    c.scale(scale,scale);
     // head
-    ctx.fillStyle = face.skin; ctx.beginPath(); ctx.arc(0,0,3.2,0,Math.PI*2); ctx.fill();
+    c.fillStyle = face.skin; c.beginPath(); c.arc(0,0,3.2,0,Math.PI*2); c.fill();
     // hair styles
-    ctx.fillStyle = face.hair;
-    if (face.style===0){ ctx.beginPath(); ctx.arc(0,-1,4.5,Math.PI,0); ctx.fill(); }
-    else if (face.style===1){ ctx.fillRect(-3.5,-2.2,7,2.2); }
-    else if (face.style===2){ for(let i=-3;i<=3;i+=2){ ctx.beginPath(); ctx.moveTo(i,-3.2); ctx.lineTo(i+1,-5.4); ctx.lineTo(i+2,-3.2); ctx.fill(); } }
-    else if (face.style===3){ ctx.fillRect(-3.5,-3.2,7,1.2); }
-    else if (face.style===4){ ctx.fillStyle = '#2a2a2a'; ctx.fillRect(-4.2,-4,8.4,2.2); }
-    // anime eyes (no nose)
-    // whites
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(-1.8,-0.6,1.2,1.6,0,0,Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(1.8,-0.6,1.2,1.6,0,0,Math.PI*2); ctx.fill();
-    // iris
-    ctx.fillStyle = face.eye; ctx.beginPath(); ctx.arc(-1.8,-0.6,0.7,0,Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(1.8,-0.6,0.7,0,Math.PI*2); ctx.fill();
-    // highlights
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-2.1,-0.9,0.25,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(1.5,-0.9,0.25,0,Math.PI*2); ctx.fill();
-    // brows
-    ctx.fillStyle = '#2a1a0a'; if(face.brows>=1){ ctx.fillRect(-3.0,-2.2,2.0,0.7); ctx.fillRect(1.0,-2.2,2.0,0.7); }
-    if(face.brows===2){ ctx.fillRect(-3.0,-2.9,2.0,0.6); ctx.fillRect(1.0,-2.9,2.0,0.6); }
-    // mouth
-    ctx.fillStyle = '#cc6b6b'; ctx.fillRect(-0.6,1.2,1.2,0.4);
-    // accessory
-    if (face.accessory==='glasses'){ ctx.strokeStyle='#c0d0ff'; ctx.lineWidth=0.6; ctx.strokeRect(-3,-2,2.4,1.8); ctx.strokeRect(0.6,-2,2.4,1.8); ctx.beginPath(); ctx.moveTo(-0.6,-1.1); ctx.lineTo(0.6,-1.1); ctx.stroke(); }
-    if (face.accessory==='ribbon'){ ctx.fillStyle='#ff6bb6'; ctx.fillRect(-1,-4,2,1); }
-    if (face.accessory==='beard'){ ctx.fillStyle='#5a3826'; ctx.fillRect(-2,1.2,4,1); }
-    ctx.restore();
+    c.fillStyle = face.hair;
+    if (face.style===0){ c.beginPath(); c.arc(0,-1,4.5,Math.PI,0); c.fill(); }
+    else if (face.style===1){ c.fillRect(-3.5,-2.2,7,2.2); }
+    else if (face.style===2){ for(let i=-3;i<=3;i+=2){ c.beginPath(); c.moveTo(i,-3.2); c.lineTo(i+1,-5.4); c.lineTo(i+2,-3.2); c.fill(); } }
+    else if (face.style===3){ c.fillRect(-3.5,-3.2,7,1.2); }
+    else if (face.style===4){ c.fillStyle = '#2a2a2a'; c.fillRect(-4.2,-4,8.4,2.2); }
+    // eyes
+    c.fillStyle = '#fff'; c.beginPath(); c.ellipse(-1.8,-0.6,1.2,1.6,0,0,Math.PI*2); c.fill();
+    c.beginPath(); c.ellipse(1.8,-0.6,1.2,1.6,0,0,Math.PI*2); c.fill();
+    c.fillStyle = face.eye; c.beginPath(); c.arc(-1.8,-0.6,0.7,0,Math.PI*2); c.fill();
+    c.beginPath(); c.arc(1.8,-0.6,0.7,0,Math.PI*2); c.fill();
+    c.fillStyle = '#fff'; c.beginPath(); c.arc(-2.1,-0.9,0.25,0,Math.PI*2); c.fill(); c.beginPath(); c.arc(1.5,-0.9,0.25,0,Math.PI*2); c.fill();
+    c.fillStyle = '#2a1a0a'; if(face.brows>=1){ c.fillRect(-3.0,-2.2,2.0,0.7); c.fillRect(1.0,-2.2,2.0,0.7); }
+    if(face.brows===2){ c.fillRect(-3.0,-2.9,2.0,0.6); c.fillRect(1.0,-2.9,2.0,0.6); }
+    c.fillStyle = '#cc6b6b'; c.fillRect(-0.6,1.2,1.2,0.4);
+    if (face.accessory==='glasses'){ c.strokeStyle='#c0d0ff'; c.lineWidth=0.6; c.strokeRect(-3,-2,2.4,1.8); c.strokeRect(0.6,-2,2.4,1.8); c.beginPath(); c.moveTo(-0.6,-1.1); c.lineTo(0.6,-1.1); c.stroke(); }
+    if (face.accessory==='ribbon'){ c.fillStyle='#ff6bb6'; c.fillRect(-1,-4,2,1); }
+    if (face.accessory==='beard'){ c.fillStyle='#5a3826'; c.fillRect(-2,1.2,4,1); }
+    c.restore();
+  }
+
+  function renderFacePortrait(face, size=40){
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const c = cv.getContext('2d');
+    drawFaceTo(c, size/2, size/2, face, size/9);
+    return cv.toDataURL();
   }
 
   // Data setup: Map, Jobs, Units
@@ -1034,6 +1201,7 @@
         facing: team==='Blue'?0:2,
       };
       u.face = generateFace(u.name);
+      u.faceImg = renderFacePortrait(u.face);
       return u;
     };
 
