@@ -24,6 +24,7 @@
   const commandPanel = document.getElementById('commandPanel');
   const statusPanel = document.getElementById('statusPanel');
   const toast = document.getElementById('toast');
+  const inspectPanel = document.getElementById('inspectPanel');
 
   // Turn rail
   const rail = document.createElement('div');
@@ -45,6 +46,8 @@
     panY: 0,
     focus: { x: 8, y: 8 }, // center tile
   };
+  camera.rotAngle = camera.rot * (Math.PI/2);
+  camera.rotTarget = camera.rotAngle;
 
   // Tile metrics
   const TILE_W = 64;  // base width of a flat diamond
@@ -60,12 +63,16 @@
       case 3: return { x: -y, y: x };
     }
   }
+  function rotCoordAngle(x, y, ang) {
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    return { x: x * ca - y * sa, y: x * sa + y * ca };
+  }
 
   function worldToScreen(wx, wy, hz) {
     // rotate in world grid space around camera focus
     const fx = camera.focus.x, fy = camera.focus.y;
     const rx = wx - fx, ry = wy - fy;
-    const r = rotCoord(rx, ry, camera.rot);
+    const r = rotCoordAngle(rx, ry, camera.rotAngle);
 
     const isoX = (r.x - r.y) * (TILE_W / 2);
     const isoY = (r.x + r.y) * (TILE_H / 2) * camera.tilt;
@@ -90,7 +97,7 @@
     const rx = x / (TILE_W / 2);
     const rX = (ry + rx) / 2;
     const rY = (ry - rx) / 2;
-    // Unrotate
+    // Unrotate (approx inverse using discrete rot for selection stability)
     let ur;
     switch (camera.rot & 3) {
       case 0: ur = { x: rX, y: rY }; break;
@@ -139,6 +146,28 @@
 
   // Update
   function update(dt) {
+    // Movement animation progression
+    if (game.anim && game.anim.kind === 'move') {
+      const anim = game.anim;
+      anim.t += (dt/1000) * anim.speed;
+      while (anim.t >= 1 && anim.index < anim.path.length - 1) {
+        anim.t -= 1;
+        anim.index++;
+      }
+      const u = idUnit.get(anim.unitId);
+      if (u) u.anim = { ...anim };
+      if (anim.index >= anim.path.length - 1) {
+        if (u) { const last = anim.path[anim.path.length - 1]; u.pos.x = last.x; u.pos.y = last.y; u.anim = null; }
+        game.anim = null;
+        // Allow further command (move then act)
+        if (game.phase === 'anim') game.phase = 'unit_start';
+      }
+    }
+    // Smooth camera rotation toward target
+    const diff = ((camera.rotTarget - camera.rotAngle + Math.PI*3) % (Math.PI*2)) - Math.PI;
+    const speed = 6.5; // rad/s
+    const step = Math.sign(diff) * Math.min(Math.abs(diff), speed * (dt/1000));
+    camera.rotAngle += step;
     // Process CT to find next actor if idle
     if (game.phase === 'idle') {
       // Advance CT to the next actor reaching 100
@@ -193,10 +222,10 @@
       }
     }
     // Sort to draw back-to-front with rotation considered by y/x swap
-    const r = camera.rot & 3;
+    const ang = camera.rotAngle;
     drawOrder.sort((a, b) => {
-      const A = rotCoord(a.x - camera.focus.x, a.y - camera.focus.y, r);
-      const B = rotCoord(b.x - camera.focus.x, b.y - camera.focus.y, r);
+      const A = rotCoordAngle(a.x - camera.focus.x, a.y - camera.focus.y, ang);
+      const B = rotCoordAngle(b.x - camera.focus.x, b.y - camera.focus.y, ang);
       const da = (A.x + A.y), db = (B.x + B.y);
       if (da !== db) return da - db;
       return (A.x - A.y) - (B.x - B.y);
@@ -261,12 +290,29 @@
     const ordered = [...units].sort((a, b) => (a.pos.x + a.pos.y + a.pos.z) - (b.pos.x + b.pos.y + b.pos.z));
     for (const u of ordered) {
       if (u.alive === false) continue;
-      const p = worldToScreen(u.pos.x, u.pos.y, map.tiles[u.pos.y][u.pos.x].h + 0.001);
+      const baseH = map.tiles[u.pos.y][u.pos.x].h + 0.001;
+      let p = worldToScreen(u.pos.x, u.pos.y, baseH);
+      if (u.anim && u.anim.kind === 'move') {
+        const i = u.anim.index;
+        const a = u.anim.path[i];
+        const b = u.anim.path[Math.min(i+1, u.anim.path.length-1)];
+        const pa = worldToScreen(a.x, a.y, map.tiles[a.y][a.x].h + 0.001);
+        const pb = worldToScreen(b.x, b.y, map.tiles[b.y][b.x].h + 0.001);
+        const t = u.anim.t;
+        p = { x: lerp(pa.x, pb.x, t), y: lerp(pa.y, pb.y, t) };
+      }
       // Shadow
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
       ctx.beginPath(); ctx.ellipse(p.x, p.y + 6, 10 * camera.zoom, 5 * camera.zoom, 0, 0, Math.PI * 2); ctx.fill();
       // Body (stylized)
       drawActorSprite(p.x, p.y - 12 * camera.zoom, u);
+      // Name label
+      ctx.font = `${Math.round(12 * camera.zoom)}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 3;
+      ctx.strokeText(u.name, p.x, p.y - 38 * camera.zoom);
+      ctx.fillText(u.name, p.x, p.y - 38 * camera.zoom);
       // HP bar
       const width = 34 * camera.zoom, height = 6 * camera.zoom;
       ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(p.x - width / 2, p.y - 34 * camera.zoom, width, height);
@@ -303,8 +349,8 @@
     } else {
       roundedRect(-10, -16, 20, 26, 6, u.color);
     }
-    // Face dot
-    ctx.fillStyle = '#ffe8cc'; ctx.beginPath(); ctx.arc(0, -6, 3, 0, Math.PI * 2); ctx.fill();
+    // Face
+    drawFace(0, -6, u.face || generateFace(u.name));
     ctx.restore();
   }
 
@@ -385,6 +431,23 @@
     renderStatusPanel();
     // Portrait rail
     renderTurnRail();
+    // Inspect panel
+    renderInspectPanel();
+  }
+
+  function renderInspectPanel() {
+    const cx = game.cursor.x, cy = game.cursor.y;
+    if (!insideMap(cx, cy)) { inspectPanel.innerHTML = ''; return; }
+    const tile = map.tiles[cy][cx];
+    const unit = units.find(u => u.alive !== false && u.pos.x === cx && u.pos.y === cy);
+    let html = `<div class="title">Inspect (${cx},${cy})</div>`;
+    html += `<div class="line"><div>Height</div><div>${tile.h.toFixed(1)}h</div></div>`;
+    html += `<div class="line"><div>Passable</div><div>${tile.pass ? 'Yes' : 'No'}</div></div>`;
+    if (unit) {
+      html += `<div class="line"><div>Unit</div><div>${unit.name} — ${unit.job} (${unit.team})</div></div>`;
+      html += `<div class="line"><div>HP</div><div>${unit.stats.hp}/${unit.stats.maxhp}</div></div>`;
+    }
+    inspectPanel.innerHTML = html;
   }
 
   function renderCommandPanel() {
@@ -463,13 +526,14 @@
     const u = idUnit.get(game.activeId);
     switch (k) {
       // Camera
-      case 'q': camera.rot = (camera.rot + 3) & 3; break;
-      case 'e': camera.rot = (camera.rot + 1) & 3; break;
+      case 'q': camera.rot = (camera.rot + 3) & 3; camera.rotTarget = camera.rot * (Math.PI/2); break;
+      case 'e': camera.rot = (camera.rot + 1) & 3; camera.rotTarget = camera.rot * (Math.PI/2); break;
       case 'r': camera.tilt = clamp(camera.tilt + 0.05, 0.7, 1.0); break;
       case 'f': camera.tilt = clamp(camera.tilt - 0.05, 0.7, 1.0); break;
       case 'z': camera.zoom = clamp(camera.zoom + 0.1, 0.8, 1.6); break;
       case 'x': camera.zoom = clamp(camera.zoom - 0.1, 0.8, 1.6); break;
       case 'h': game.uiHints = !game.uiHints; document.getElementById('controls').classList.toggle('hidden', !game.uiHints); break;
+      case '0': autoBattleActiveUnit(); break;
 
       // Cursor
       case 'arrowleft': moveCursor(-1, 0); break;
@@ -492,8 +556,15 @@
     }
   }
 
+  function autoBattleActiveUnit() {
+    const u = idUnit.get(game.activeId);
+    if (!u) return;
+    if (u.team !== 'Blue') return;
+    aiAct(u);
+  }
+
   function moveCursor(dx, dy) {
-    const r = rotCoord(dx, dy, camera.rot);
+    const r = rotIndexCoord(dx, dy, camera.rot);
     const nx = clamp(game.cursor.x + r.x, 0, map.w - 1);
     const ny = clamp(game.cursor.y + r.y, 0, map.h - 1);
     game.cursor.x = nx; game.cursor.y = ny;
@@ -544,10 +615,12 @@
       // Move unit to cursor if in range and passable
       const path = findPath(u.pos, { x: game.cursor.x, y: game.cursor.y }, u.stats.mov, u.stats.jump);
       if (path) {
-        u.pos.x = game.cursor.x; u.pos.y = game.cursor.y; // teleport along path (simplified)
+        // animate movement
+        u.anim = { kind:'move', path, index:0, t:0, speed:6.0 };
+        game.anim = { kind:'move', unitId:u.id, path, index:0, t:0, speed:6.0 };
         awardJP(u, 5);
         showToast(`${u.name} moved.`);
-        game.phase = 'unit_start'; // allow action after move; could enforce move-then-act rules
+        game.phase = 'anim';
         game.targeting = null;
         return;
       } else {
@@ -574,6 +647,8 @@
         }
       }
     }
+    // Face toward action center
+    setFacingTowards(u, { x: game.cursor.x, y: game.cursor.y });
     awardEXP(u, Math.max(10, exp));
     awardJP(u, jp);
     endTurn(u, t.ability.ct);
@@ -614,32 +689,43 @@
     for (const u of units) {
       if (u.alive === false) continue;
       if (tiles.some(tt => tt.x === u.pos.x && tt.y === u.pos.y)) {
-        const res = calcEffect(t.ability, idUnit.get(game.activeId), u, t.cursor);
+        const res = calcEffect(t.ability, idUnit.get(game.activeId), u, t.cursor, t.origin);
         if (res) list.push(res);
       }
     }
     return list;
   }
 
-  function calcEffect(ability, user, target, centerTile) {
-    const dist = gridDist(user.pos, centerTile);
+  function calcEffect(ability, user, target, centerTile, originTile) {
+    const from = originTile || user.pos;
+    const dist = gridDist(from, centerTile);
     if (dist > ability.range) return null;
     // Target side rules: damage enemies, heal allies
     if (ability.kind === 'heal' && user.team !== target.team) return null;
     if (ability.kind !== 'heal' && user.team === target.team) return null;
     // Height modifier
-    const uh = map.tiles[user.pos.y][user.pos.x].h;
+    const uh = map.tiles[from.y][from.x].h;
     const th = map.tiles[target.pos.y][target.pos.x].h;
     const hDiff = uh - th;
     let baseHit = (ability.baseHit != null ? ability.baseHit : 0.75);
     baseHit += clamp((hDiff) * 0.05, -0.2, 0.2);
-    baseHit = clamp(baseHit, 0.05, 0.98);
     let amount = 0; let kind = ability.kind || 'damage';
     if (kind === 'heal') amount = Math.round(ability.power + user.stats.mag * 1.2);
     else amount = Math.round(ability.power + user.stats.atk * 1.1);
+    // LoS & cover for ranged physical
+    if (kind !== 'heal' && ability.range > 1 && ability.reqLoS !== false) {
+      const los = hasLineOfSight(from, target.pos);
+      if (!los) return { id: target.id, amount, hit: 0, kind };
+      baseHit += coverPenalty(from, target.pos);
+    }
+    // Facing bonuses
+    const facingMod = facingModifier({ pos: from, facing: user.facing, team: user.team }, target);
+    baseHit += facingMod.hit;
+    amount = Math.round(amount * (1 + facingMod.dmg));
+    baseHit = clamp(baseHit, 0.05, 0.98);
     // Ranged falloff for Archer attack
     if (ability.key === 'attack' && user.job === 'Archer') {
-      const d = gridDist(user.pos, target.pos);
+      const d = gridDist(from, target.pos);
       amount = Math.max(1, Math.round(amount * (1 - Math.max(0, d - 3) * 0.1)));
     }
     return { id: target.id, amount, hit: baseHit, kind };
@@ -700,8 +786,17 @@
       }
     }
     if (!prev.has(goal) && start !== goal) return null;
-    // reconstruct (we skip for movement anim, but return non-null for validity)
-    return true;
+    // reconstruct path
+    const path = [];
+    let cur = goal;
+    path.push(strToPos(cur));
+    while (cur !== start) {
+      cur = prev.get(cur);
+      if (!cur) break;
+      path.push(strToPos(cur));
+    }
+    path.reverse();
+    return path;
   }
 
   // Utilities
@@ -716,11 +811,119 @@
     b = clamp(Math.round(b + amount), 0, 255);
     return `#${(r<<16|g<<8|b).toString(16).padStart(6,'0')}`;
   }
+  function setFacingTowards(u, target) {
+    const dx = target.x - u.pos.x, dy = target.y - u.pos.y;
+    if (Math.abs(dx) > Math.abs(dy)) u.facing = dx > 0 ? 1 : 3; else if (Math.abs(dy) > 0) u.facing = dy > 0 ? 2 : 0;
+  }
   function showToast(text) {
     toast.textContent = text;
     toast.style.opacity = 1;
     clearTimeout(showToast._t);
     showToast._t = setTimeout(() => { toast.style.opacity = 0; }, 1400);
+  }
+  function strToPos(s){ const [x,y] = s.split(',').map(Number); return { x, y }; }
+
+  // Line of sight and cover
+  function bresenham(x0, y0, x1, y1) {
+    const points = [];
+    let dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    let dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    let x = x0, y = y0;
+    while (true) {
+      points.push({ x, y });
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x += sx; }
+      if (e2 <= dx) { err += dx; y += sy; }
+    }
+    return points;
+  }
+  function hasLineOfSight(a, b) {
+    if (gridDist(a,b) <= 1) return true;
+    const points = bresenham(a.x, a.y, b.x, b.y);
+    const ah = map.tiles[a.y][a.x].h;
+    const bh = map.tiles[b.y][b.x].h;
+    const blockH = Math.min(ah, bh) + 0.5;
+    for (let i = 1; i < points.length - 1; i++) {
+      const p = points[i];
+      const t = map.tiles[p.y][p.x];
+      if (!t.pass || t.h > blockH) return false;
+    }
+    return true;
+  }
+  function coverPenalty(a, b) {
+    let pen = 0;
+    const dx = Math.sign(b.x - a.x), dy = Math.sign(b.y - a.y);
+    const fx = b.x - dx, fy = b.y - dy;
+    if (insideMap(fx, fy)) {
+      const t = map.tiles[fy][fx];
+      if (!t.pass || t.h >= map.tiles[b.y][b.x].h) pen -= 0.2;
+    }
+    const unitBlock = units.some(u => u.alive!==false && u.pos.x===fx && u.pos.y===fy);
+    if (unitBlock) pen -= 0.1;
+    return pen;
+  }
+
+  // Facing utilities
+  function rotIndexCoord(x, y, rot) {
+    switch (rot & 3) {
+      case 0: return { x, y };
+      case 1: return { x: y, y: -x };
+      case 2: return { x: -x, y: -y };
+      case 3: return { x: -y, y: x };
+    }
+  }
+  function facingModifier(attacker, target) {
+    const dx = Math.sign(attacker.pos.x - target.pos.x);
+    const dy = Math.sign(attacker.pos.y - target.pos.y);
+    const v = rotIndexCoord(dx, dy, (4 - (target.facing||0)) & 3);
+    if (v.y > 0 && v.x === 0) return { hit: 0.25, dmg: 0.25 };
+    if (v.y === 0 && v.x !== 0) return { hit: 0.10, dmg: 0.10 };
+    return { hit: 0, dmg: 0 };
+  }
+
+  // Seeded face generation
+  function seedFromString(str){
+    let h = 2166136261 >>> 0;
+    for (let i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
+  function srand(seed){ let a = seed>>>0; return function(){ a = (a*1664525 + 1013904223)>>>0; return (a>>>0)/4294967296; }; }
+  function pick(rnd, arr){ return arr[Math.floor(rnd()*arr.length)]; }
+  function generateFace(name){
+    const r = srand(seedFromString(name));
+    const gender = r() < 0.5 ? 'F' : 'M';
+    const skin = pick(r, ['#ffe0c0','#ffd0a0','#eec29a','#d6a67e','#b98565']);
+    const eye = pick(r, ['#3a3a3a','#2b4a6f','#4a2b6f','#2b6f48']);
+    const hair = pick(r, ['#2e1b0f','#5a3826','#7b4b2a','#cfa66b','#131722','#6b2f2f']);
+    const style = Math.floor(r()*5); // 0:short,1:long,2:spiky,3:bangs,4:cap
+    const brows = Math.floor(r()*3); // 0..2
+    const accessory = r()<0.15 ? (gender==='M'?'beard':'ribbon') : (r()<0.15?'glasses':null);
+    return { gender, skin, eye, hair, style, brows, accessory };
+  }
+  function drawFace(x,y,face){
+    ctx.save();
+    ctx.translate(x,y);
+    // head
+    ctx.fillStyle = face.skin; ctx.beginPath(); ctx.arc(0,0,3,0,Math.PI*2); ctx.fill();
+    // hair styles
+    ctx.fillStyle = face.hair;
+    if (face.style===0){ ctx.beginPath(); ctx.arc(0,-1,4,Math.PI,0); ctx.fill(); }
+    else if (face.style===1){ ctx.fillRect(-3,-2,6,2); }
+    else if (face.style===2){ for(let i=-3;i<=3;i+=2){ ctx.beginPath(); ctx.moveTo(i,-3); ctx.lineTo(i+1,-5); ctx.lineTo(i+2,-3); ctx.fill(); } }
+    else if (face.style===3){ ctx.fillRect(-3,-3,6,1); }
+    else if (face.style===4){ ctx.fillStyle = '#2a2a2a'; ctx.fillRect(-4,-4,8,2); }
+    // eyes
+    ctx.fillStyle = face.eye; ctx.fillRect(-2,-1,1,1); ctx.fillRect(1,-1,1,1);
+    // brows
+    ctx.fillStyle = '#2a1a0a'; if(face.brows>=1){ ctx.fillRect(-2,-2,2,1); ctx.fillRect(0,-2,2,1); }
+    if(face.brows===2){ ctx.fillRect(-2,-3,2,1); ctx.fillRect(0,-3,2,1); }
+    // accessory
+    if (face.accessory==='glasses'){ ctx.strokeStyle='#c0d0ff'; ctx.lineWidth=0.6; ctx.strokeRect(-3,-2,2,2); ctx.strokeRect(1,-2,2,2); ctx.beginPath(); ctx.moveTo(-1,-1); ctx.lineTo(1,-1); ctx.stroke(); }
+    if (face.accessory==='ribbon'){ ctx.fillStyle='#ff6bb6'; ctx.fillRect(-1,-4,2,1); }
+    if (face.accessory==='beard'){ ctx.fillStyle='#5a3826'; ctx.fillRect(-2,1,4,1); }
+    ctx.restore();
   }
 
   // Data setup: Map, Jobs, Units
@@ -785,14 +988,14 @@
       color: '#d6a2ff',
       attack: { key:'attack', name:'Bonk', range:1, aoe:0, ct: 25, power: 6, kind:'damage', baseHit:0.85 },
       abilities: [
-        { key:'fire', name:'Fire', range:3, aoe:1, ct: 40, power: 16, kind:'damage', baseHit:0.95 },
+        { key:'fire', name:'Fire', range:3, aoe:1, ct: 40, power: 16, kind:'damage', baseHit:0.95, reqLoS:false },
       ],
     };
     jobs['Priest'] = {
       color: '#fff0a8',
       attack: { key:'attack', name:'Staff', range:1, aoe:0, ct: 25, power: 6, kind:'damage', baseHit:0.85 },
       abilities: [
-        { key:'cure', name:'Cure', range:3, aoe:0, ct: 35, power: 14, kind:'heal', baseHit:1.0 },
+        { key:'cure', name:'Cure', range:3, aoe:0, ct: 35, power: 14, kind:'heal', baseHit:1.0, reqLoS:false },
       ],
     };
     return jobs;
@@ -800,18 +1003,23 @@
 
   function createUnits(map) {
     let uid = 1;
-    const mkUnit = (name, job, team, x, y) => ({
-      id: uid++, name, job, team, color: (team==='Blue'? '#4fc3f7':'#ff6b6b'),
-      pos: { x, y, z: map.tiles[y][x].h },
-      stats: {
-        lvl: 1, exp: 0, jp: 0,
-        hp: 40, maxhp: 40, spd: 8 + irnd(0,2), mov: job==='Knight'?4:(job==='Archer'?4:3), jump: job==='Knight'?2:1,
-        atk: job==='Knight'?8:(job==='Archer'?7:4), mag: job==='Mage'?8:(job==='Priest'?7:3),
-      },
-      abilities: [...JOBS[job].abilities],
-      ct: 0,
-      alive: true,
-    });
+    const mkUnit = (name, job, team, x, y) => {
+      const u = {
+        id: uid++, name, job, team, color: (team==='Blue'? '#4fc3f7':'#ff6b6b'),
+        pos: { x, y, z: map.tiles[y][x].h },
+        stats: {
+          lvl: 1, exp: 0, jp: 0,
+          hp: 40, maxhp: 40, spd: 8 + irnd(0,2), mov: job==='Knight'?4:(job==='Archer'?4:3), jump: job==='Knight'?2:1,
+          atk: job==='Knight'?8:(job==='Archer'?7:4), mag: job==='Mage'?8:(job==='Priest'?7:3),
+        },
+        abilities: [...JOBS[job].abilities],
+        ct: 0,
+        alive: true,
+        facing: team==='Blue'?0:2,
+      };
+      u.face = generateFace(u.name);
+      return u;
+    };
 
     const blues = [
       mkUnit('Garnet', 'Knight', 'Blue', 5, 12),
@@ -828,62 +1036,145 @@
     return [...blues, ...reds];
   }
 
-  // Enemy AI: simple behavior for Red team
+  // Enemy AI: per-job strategies for Red team
   function aiAct(u) {
     if (!u || u.alive === false || game.activeId !== u.id) return;
-    // Try to attack best target in range using strongest ability
-    const abilities = [JOBS[u.job].attack, ...u.abilities];
-    let best = null;
-    for (const ab of abilities) {
-      // Scan tiles in range
-      const tiles = computeAbilityTiles(u.pos, ab);
-      for (const tile of tiles) {
-        const list = computeAbilityEffectAtCursor({ ability: ab, origin: u.pos, cursor: tile });
-        const vsBlue = list.filter(e => idUnit.get(e.id).team === 'Blue');
-        const value = vsBlue.reduce((s, e) => s + e.amount * e.hit * (e.kind==='heal' ? -1 : 1), 0);
-        if (value > 0) {
-          if (!best || value > best.value) best = { ab, tile, value };
+    if (u.job === 'Priest') { return aiPriest(u); }
+    if (u.job === 'Mage') { return aiMage(u); }
+    if (u.job === 'Archer') { return aiArcher(u); }
+    return aiKnight(u);
+  }
+
+  function aiPriest(u){
+    // Heal lowest-HP ally in range; otherwise reposition toward allies or bonk
+    const cure = u.abilities.find(a=>a.key==='cure');
+    const allies = units.filter(t=>t.team===u.team && t.alive!==false && t.stats.hp < t.stats.maxhp);
+    let best=null;
+    if (cure) {
+      const tiles = computeAbilityTiles(u.pos, cure);
+      for (const tile of tiles){
+        const eff = computeAbilityEffectAtCursor({ ability:cure, origin:u.pos, cursor:tile });
+        const val = eff.filter(e=>idUnit.get(e.id).team===u.team).reduce((s,e)=>s + e.amount*e.hit,0);
+        if (val>0 && (!best || val>best.value)) best = { ability:cure, tile, value:val };
+      }
+      if (best){ game.phase='targeting'; game.targeting={ability:cure, origin:{x:u.pos.x,y:u.pos.y}, cursor:best.tile}; confirmAction(); return; }
+    }
+    // otherwise, move toward most injured ally
+    if (allies.length){
+      const target = allies.sort((a,b)=> (a.stats.hp/a.stats.maxhp) - (b.stats.hp/b.stats.maxhp))[0];
+      return aiMoveTowardAndMaybeAttack(u, target);
+    }
+    return endTurn(u, 10);
+  }
+  function aiMage(u){
+    const fire = u.abilities.find(a=>a.key==='fire');
+    if (fire){
+      let best=null;
+      const tiles = computeAbilityTiles(u.pos, fire);
+      for (const tile of tiles){
+        const eff = computeAbilityEffectAtCursor({ ability:fire, origin:u.pos, cursor:tile });
+        // prefer hitting enemies and avoid friendly fire
+        const val = eff.reduce((s,e)=> s + (idUnit.get(e.id).team!==u.team ? e.amount*e.hit : -e.amount*0.5), 0);
+        if (val>5 && (!best || val>best.value)) best={ ability:fire, tile, value:val };
+      }
+      if (best){ game.phase='targeting'; game.targeting={ability:fire, origin:{x:u.pos.x,y:u.pos.y}, cursor:best.tile}; confirmAction(); return; }
+    }
+    // else basic attack if adjacent
+    const enemies = units.filter(x=>x.team!==u.team && x.alive!==false);
+    const near = enemies.find(t=>gridDist(u.pos, t.pos)<=1);
+    if (near){ game.phase='targeting'; game.targeting={ability:JOBS[u.job].attack, origin:{x:u.pos.x,y:u.pos.y}, cursor:near.pos}; confirmAction(); return; }
+    // move toward cluster of enemies
+    const target = enemies.sort((a,b)=> gridDist(u.pos,a.pos)-gridDist(u.pos,b.pos))[0];
+    return aiMoveTowardAndMaybeAttack(u, target);
+  }
+  function aiArcher(u){
+    // Attempt best shot with LoS from current or reachable tiles
+    const abilities = [ ...u.abilities, JOBS[u.job].attack ];
+    let best=null;
+    const considerTiles = candidateMoveTiles(u);
+    for (const pos of considerTiles){
+      for (const ab of abilities){
+        const tiles = computeAbilityTiles(pos, ab);
+        for (const tile of tiles){
+          const eff = computeAbilityEffectAtCursor({ ability:ab, origin:pos, cursor:tile });
+          const val = eff.filter(e=>idUnit.get(e.id).team!==u.team).reduce((s,e)=>s + e.amount*e.hit,0);
+          if (val>0 && (!best || val>best.value)) best={ from:pos, ability:ab, tile, value:val };
         }
       }
     }
-    if (best) {
-      // Execute chosen attack
-      game.phase = 'targeting';
-      game.targeting = { ability: best.ab, origin: { x: u.pos.x, y: u.pos.y }, cursor: best.tile };
-      confirmAction();
-      return;
+    if (best){
+      if (best.from.x!==u.pos.x || best.from.y!==u.pos.y){
+        // move first
+        const path = findPath(u.pos, best.from, u.stats.mov, u.stats.jump);
+        if (path){ u.anim={kind:'move', path, index:0, t:0, speed:6.0}; game.anim={...u.anim, unitId:u.id}; game.phase='anim';
+          setTimeout(()=>{ game.phase='targeting'; game.targeting={ability:best.ability, origin:{x:best.from.x,y:best.from.y}, cursor:best.tile}; confirmAction(); }, 400);
+          return; }
+      }
+      game.phase='targeting'; game.targeting={ability:best.ability, origin:{x:u.pos.x,y:u.pos.y}, cursor:best.tile}; confirmAction(); return;
     }
-    // Otherwise move toward nearest Blue
-    const blueTargets = units.filter(x => x.team === 'Blue' && x.alive !== false);
-    if (blueTargets.length === 0) { endTurn(u, 10); return; }
-    const nearest = blueTargets.sort((a,b) => gridDist(u.pos, a.pos) - gridDist(u.pos, b.pos))[0];
-    // Choose a neighbor tile within range that reduces distance
-    let bestMove = { x: u.pos.x, y: u.pos.y, d: gridDist(u.pos, nearest.pos) };
+    // otherwise kite away from nearest enemy
+    const enemies = units.filter(x=>x.team!==u.team && x.alive!==false);
+    const nearest = enemies.sort((a,b)=> gridDist(u.pos,a.pos)-gridDist(u.pos,b.pos))[0];
+    return aiMoveTowardAndMaybeAttack(u, nearest, { preferDistance:true });
+  }
+  function aiKnight(u){
+    const enemies = units.filter(x=>x.team!==u.team && x.alive!==false);
+    // If adjacent, use best melee
+    const adjacent = enemies.find(t=>gridDist(u.pos,t.pos)<=1);
+    if (adjacent){
+      const ab = u.abilities.find(a=>a.key==='smite') || JOBS[u.job].attack;
+      game.phase='targeting'; game.targeting={ability:ab, origin:{x:u.pos.x,y:u.pos.y}, cursor:adjacent.pos}; confirmAction(); return;
+    }
+    // Else move to back/side if possible near nearest
+    const target = enemies.sort((a,b)=> gridDist(u.pos,a.pos)-gridDist(u.pos,b.pos))[0];
+    // tiles around target, prefer behind
+    const dirs = [ {dx:0,dy:1,score:3}, {dx:1,dy:0,score:2}, {dx:-1,dy:0,score:2}, {dx:0,dy:-1,score:1} ];
+    let best=null;
+    for (const d of dirs){
+      const tx = target.pos.x + d.dx, ty = target.pos.y + d.dy;
+      const path = findPath(u.pos, {x:tx,y:ty}, u.stats.mov, u.stats.jump);
+      if (path){ const score = d.score - path.length*0.1; if (!best || score>best.score) best={ to:{x:tx,y:ty}, score } }
+    }
+    if (best){ u.pos.x = best.to.x; u.pos.y = best.to.y; showToast(`${u.name} advances.`); }
+    // Try attack if now adjacent
+    const adj2 = enemies.find(t=>gridDist(u.pos,t.pos)<=1);
+    if (adj2){ const ab = u.abilities.find(a=>a.key==='smite') || JOBS[u.job].attack; game.phase='targeting'; game.targeting={ability:ab, origin:{x:u.pos.x,y:u.pos.y}, cursor:adj2.pos}; confirmAction(); return; }
+    return endTurn(u, 15);
+  }
+
+  // Helpers for AI
+  function candidateMoveTiles(u){
     const occ = new Set(units.filter(r=>r.alive!==false && r.id!==u.id).map(r=>`${r.pos.x},${r.pos.y}`));
-    for (let y = 0; y < map.h; y++) for (let x = 0; x < map.w; x++) {
-      const d = Math.abs(x - u.pos.x) + Math.abs(y - u.pos.y);
-      if (d <= u.stats.mov && insideMap(x,y) && map.tiles[y][x].pass && !occ.has(`${x},${y}`)) {
+    const tiles=[];
+    for (let y=0;y<map.h;y++) for (let x=0;x<map.w;x++){
+      const d = Math.abs(x-u.pos.x)+Math.abs(y-u.pos.y);
+      if (d<=u.stats.mov && insideMap(x,y) && map.tiles[y][x].pass && !occ.has(`${x},${y}`)){
         const h1 = map.tiles[u.pos.y][u.pos.x].h, h2 = map.tiles[y][x].h;
-        if (Math.abs(h2 - h1) > u.stats.jump) continue;
-        const distToTarget = Math.abs(x - nearest.pos.x) + Math.abs(y - nearest.pos.y);
-        if (distToTarget < bestMove.d) bestMove = { x, y, d: distToTarget };
+        if (Math.abs(h2-h1) <= u.stats.jump) tiles.push({x,y});
       }
     }
-    // Move
-    if (bestMove.x !== u.pos.x || bestMove.y !== u.pos.y) {
-      u.pos.x = bestMove.x; u.pos.y = bestMove.y; showToast(`${u.name} repositions.`);
+    tiles.push({x:u.pos.x,y:u.pos.y});
+    return tiles;
+  }
+  function aiMoveTowardAndMaybeAttack(u, target, opts={}){
+    const currentD = gridDist(u.pos, target.pos);
+    let best = { x:u.pos.x, y:u.pos.y, score: -Infinity };
+    const tiles = candidateMoveTiles(u);
+    for (const t of tiles){
+      const d = gridDist(t, target.pos);
+      let score = -d;
+      if (opts.preferDistance) score = -Math.abs(4 - d); // keep 3-5 tiles
+      // prefer high ground
+      score += map.tiles[t.y][t.x].h * 0.2;
+      if (score>best.score) best = { x:t.x, y:t.y, score };
     }
-    // After moving, try a basic attack if now in range
+    if (best.x!==u.pos.x || best.y!==u.pos.y){ u.pos.x=best.x; u.pos.y=best.y; showToast(`${u.name} repositions.`); }
+    // try attack now
     const ab = JOBS[u.job].attack;
-    const list = computeAbilityEffectAtCursor({ ability: ab, origin: u.pos, cursor: nearest.pos });
-    const vsBlue = list.filter(e => idUnit.get(e.id).team === 'Blue');
-    if (vsBlue.length) {
-      game.phase = 'targeting';
-      game.targeting = { ability: ab, origin: { x: u.pos.x, y: u.pos.y }, cursor: { x: nearest.pos.x, y: nearest.pos.y } };
-      confirmAction();
-    } else {
-      endTurn(u, 15);
-    }
+    const eff = computeAbilityEffectAtCursor({ ability:ab, origin:u.pos, cursor: target.pos });
+    const vsEnemy = eff.filter(e=>idUnit.get(e.id).team!==u.team);
+    if (vsEnemy.length){ game.phase='targeting'; game.targeting={ability:ab, origin:{x:u.pos.x,y:u.pos.y}, cursor:target.pos}; confirmAction(); return; }
+    return endTurn(u, 12);
   }
 
 })();
