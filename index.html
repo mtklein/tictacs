@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FFTactics-like Vertical Slice</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preload" href="style.css" as="style" />
+  <link rel="preload" href="main.js" as="script" />
+  <meta name="color-scheme" content="dark light" />
+</head>
+<body>
+  <div id="root">
+    <canvas id="game" width="1280" height="800"></canvas>
+    <div id="overlay">
+      <div id="controls">
+        <div class="title">Controls</div>
+        <div class="grid">
+          <div><span class="k">Q/E</span> Rotate 90°</div>
+          <div><span class="k">R/F</span> Tilt Up/Down</div>
+          <div><span class="k">Z/X</span> Zoom In/Out</div>
+          <div><span class="k">Arrows/Mouse</span> Move cursor</div>
+          <div><span class="k">Enter/Space</span> Confirm</div>
+          <div><span class="k">Esc/Backspace</span> Cancel</div>
+          <div><span class="k">1-5</span> Command shortcuts</div>
+          <div><span class="k">H</span> Toggle UI hints</div>
+        </div>
+      </div>
+      <div id="commandPanel"></div>
+      <div id="statusPanel"></div>
+      <div id="toast"></div>
+    </div>
+  </div>
+  <script src="main.js"></script>
+  <noscript>This demo requires JavaScript.</noscript>
+</body>
+</html>
+
