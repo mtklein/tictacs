@@ -237,7 +237,7 @@
       if (speeds.length === 0) return;
       const timeTo100 = speeds.map(u => (u.ct >= 100 ? 0 : (100 - u.ct) / Math.max(1, u.stats.spd)));
       const minT = Math.min(...timeTo100);
-      for (const u of speeds) u.ct += u.stats.spd * minT;
+      for (const u of speeds) u.ct += Math.max(1, u.stats.spd) * minT;
       const next = speeds.find(u => u.ct >= 100);
       if (next) {
         game.activeId = next.id;
